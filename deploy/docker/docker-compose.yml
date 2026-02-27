@@ -1,0 +1,184 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: stock-postgres
+    environment:
+      POSTGRES_USER: stock_user
+      POSTGRES_PASSWORD: stock_pass
+      POSTGRES_DB: stock_analysis
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../database/scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stock_user -d stock_analysis"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # InfluxDB 时序数据库
+  influxdb:
+    image: influxdb:2.7-alpine
+    container_name: stock-influxdb
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: admin123
+      DOCKER_INFLUXDB_INIT_ORG: stock_org
+      DOCKER_INFLUXDB_INIT_BUCKET: stock_market
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: stock-token-12345
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+
+  # 数据同步服务
+  data-service:
+    build:
+      context: ../../backend
+      dockerfile: ../deploy/docker/Dockerfile.data-service
+    container_name: stock-data-service
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: stock_user
+      POSTGRES_PASSWORD: stock_pass
+      POSTGRES_DB: stock_analysis
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: stock-token-12345
+      INFLUXDB_ORG: stock_org
+      INFLUXDB_BUCKET: stock_market
+      DATA_SERVICE_PORT: 8081
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_started
+
+  # 行情服务
+  market-service:
+    build:
+      context: ../../backend
+      dockerfile: ../deploy/docker/Dockerfile.market-service
+    container_name: stock-market-service
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: stock_user
+      POSTGRES_PASSWORD: stock_pass
+      POSTGRES_DB: stock_analysis
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: stock-token-12345
+      INFLUXDB_ORG: stock_org
+      INFLUXDB_BUCKET: stock_market
+      MARKET_SERVICE_PORT: 8082
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_started
+
+  # 用户服务
+  user-service:
+    build:
+      context: ../../backend
+      dockerfile: ../deploy/docker/Dockerfile.user-service
+    container_name: stock-user-service
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: stock_user
+      POSTGRES_PASSWORD: stock_pass
+      POSTGRES_DB: stock_analysis
+      JWT_SECRET: your-secret-key-here
+      USER_SERVICE_PORT: 8083
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # 策略服务
+  strategy-service:
+    build:
+      context: ../../backend
+      dockerfile: ../deploy/docker/Dockerfile.strategy-service
+    container_name: stock-strategy-service
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: stock_user
+      POSTGRES_PASSWORD: stock_pass
+      POSTGRES_DB: stock_analysis
+      JWT_SECRET: your-secret-key-here
+      STRATEGY_SERVICE_PORT: 8084
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # 回测服务
+  backtest-service:
+    build:
+      context: ../../backend
+      dockerfile: ../deploy/docker/Dockerfile.backtest-service
+    container_name: stock-backtest-service
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: stock_user
+      POSTGRES_PASSWORD: stock_pass
+      POSTGRES_DB: stock_analysis
+      JWT_SECRET: your-secret-key-here
+      BACKTEST_SERVICE_PORT: 8085
+    ports:
+      - "8085:8085"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # API Gateway
+  gateway:
+    build:
+      context: ../../backend
+      dockerfile: ../deploy/docker/Dockerfile.gateway
+    container_name: stock-gateway
+    environment:
+      MARKET_SERVICE_URL: http://market-service:8082
+      USER_SERVICE_URL: http://user-service:8083
+      STRATEGY_SERVICE_URL: http://strategy-service:8084
+      BACKTEST_SERVICE_URL: http://backtest-service:8085
+      DATA_SERVICE_URL: http://data-service:8081
+      SERVER_PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - market-service
+      - user-service
+      - strategy-service
+      - backtest-service
+      - data-service
+
+  # 前端 Web
+  web:
+    build:
+      context: ../../frontend/web
+      dockerfile: ../../deploy/docker/Dockerfile.web
+    container_name: stock-web
+    ports:
+      - "3000:80"
+    depends_on:
+      - gateway
+
+volumes:
+  postgres_data:
+  influxdb_data:
